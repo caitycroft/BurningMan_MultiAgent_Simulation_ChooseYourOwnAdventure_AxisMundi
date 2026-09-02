@@ -64,6 +64,14 @@ export const SCRIPTED_PATH: Waypoint[] = [
 
 export const TOTAL_SIM_HOURS = SCRIPTED_PATH[SCRIPTED_PATH.length - 1].atHour
 
+// Caity and Kenny hold position at waypoint `a` for most of the gap (living the
+// thing `a.label` describes) and only travel during a short window right before
+// `b`'s time -- otherwise a 3-hour gap between events reads as "wandering the
+// whole time" instead of "at the burn, then a quick bike over to the next thing."
+function travelBufferHours(span: number): number {
+  return Math.min(0.5, Math.max(0.05, span * 0.15))
+}
+
 export function sampleWaypointsAt(waypoints: Waypoint[], atHour: number) {
   const clamped = Math.max(waypoints[0].atHour, Math.min(atHour, waypoints[waypoints.length - 1].atHour))
   let i = 0
@@ -71,6 +79,23 @@ export function sampleWaypointsAt(waypoints: Waypoint[], atHour: number) {
   const a = waypoints[i]
   const b = waypoints[Math.min(i + 1, waypoints.length - 1)]
   const span = b.atHour - a.atHour
-  const t = span > 0 ? (clamped - a.atHour) / span : 0
-  return { a, b, t }
+  const buffer = travelBufferHours(span)
+  const travelStart = b.atHour - buffer
+  const t = clamped <= travelStart ? 0 : span > 0 ? (clamped - travelStart) / buffer : 0
+  return { a, b, t, index: i }
+}
+
+export interface Moment {
+  status: 'at' | 'traveling'
+  from: Waypoint
+  to: Waypoint
+  progress: number
+  next: Waypoint | null
+}
+
+export function getMomentAt(waypoints: Waypoint[], atHour: number): Moment {
+  const { a, b, t, index } = sampleWaypointsAt(waypoints, atHour)
+  const status = t <= 0 || a.placeId === b.placeId ? 'at' : 'traveling'
+  const next = waypoints[index + 2] ?? null
+  return { status, from: a, to: b, progress: t, next }
 }

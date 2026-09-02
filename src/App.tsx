@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import LivingMap from './canvas/LivingMap'
-import { DAY_LABELS, EVENTS } from './brc2026'
-import { TOTAL_SIM_HOURS } from './data/itinerary'
+import { DAY_LABELS, EVENTS, findPlace, liveEventsAtVenue } from './brc2026'
+import { SCRIPTED_PATH, TOTAL_SIM_HOURS, getMomentAt } from './data/itinerary'
 
 const BASE_SIM_MINUTES_PER_SEC = 5
 const SPEEDS = [1, 10, 60] as const
@@ -45,6 +45,14 @@ export default function App() {
   const hh = Math.floor(hourOfDay).toString().padStart(2, '0')
   const mm = Math.round((hourOfDay % 1) * 60).toString().padStart(2, '0')
 
+  const moment = useMemo(() => getMomentAt(SCRIPTED_PATH, simHour), [simHour])
+  const fromPlace = findPlace(moment.from.placeId)
+  const toPlace = findPlace(moment.to.placeId)
+  const herePlace = moment.status === 'at' ? fromPlace : toPlace
+  const hereActivity = moment.status === 'at' ? moment.from.label : moment.to.label
+  const liveHere = liveEventsAtVenue(herePlace.id, simHour)
+  const nextPlace = moment.next ? findPlace(moment.next.placeId) : null
+
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh' }}>
       <LivingMap simHour={simHour} />
@@ -61,6 +69,78 @@ export default function App() {
         }}
       >
         Axis Mundi — {DAY_LABELS[Math.min(day, DAY_LABELS.length - 1)]} · {hh}:{mm}
+      </div>
+
+      <div
+        style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          maxWidth: 260,
+          padding: '12px 14px',
+          borderRadius: 10,
+          background: 'rgba(10,10,10,0.65)',
+          border: '1px solid rgba(255,255,255,0.1)',
+          fontSize: 12,
+          lineHeight: 1.5,
+        }}
+      >
+        <div style={{ fontSize: 10, letterSpacing: '0.08em', opacity: 0.5, textTransform: 'uppercase' }}>
+          {moment.status === 'at' ? 'At' : 'En route'}
+        </div>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>
+          {moment.status === 'at' ? herePlace.label : `${fromPlace.label} → ${toPlace.label}`}
+        </div>
+        <div style={{ opacity: 0.75, marginTop: 2 }}>{hereActivity}</div>
+
+        {liveHere.length > 0 && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ fontSize: 10, letterSpacing: '0.08em', opacity: 0.5, textTransform: 'uppercase' }}>
+              Live now
+            </div>
+            {liveHere.map((e) => (
+              <div key={e.id} style={{ color: '#ffcf8a' }}>
+                {e.label}{' '}
+                <span style={{ opacity: 0.6, fontSize: 11 }}>({e.tags.join(', ')})</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {nextPlace && (
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <div style={{ fontSize: 10, letterSpacing: '0.08em', opacity: 0.5, textTransform: 'uppercase' }}>
+              Next
+            </div>
+            <div style={{ opacity: 0.85 }}>
+              {moment.next!.label} <span style={{ opacity: 0.6 }}>· {nextPlace.label}</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 90,
+          right: 16,
+          padding: '10px 12px',
+          borderRadius: 10,
+          background: 'rgba(10,10,10,0.55)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          fontSize: 11,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+        }}
+      >
+        <LegendRow color="#00e5ff" label="Caity & Kenny" />
+        <LegendRow color="#ffd76a" label="Home camp" />
+        <LegendRow color="rgba(190,180,255,0.9)" label="Friend camp" />
+        <LegendRow color="rgba(170,170,190,0.9)" label="Venue" />
+        <LegendRow color="rgba(200,140,255,0.9)" label="Art" />
+        <LegendRow color="#ff5aa0" label="Robot Heart (roaming)" />
+        <LegendRow color="#ffcf8a" label="Live event (pulsing)" />
       </div>
 
       <div
@@ -133,6 +213,15 @@ export default function App() {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function LegendRow({ color, label }: { color: string; label: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+      <span style={{ opacity: 0.75 }}>{label}</span>
     </div>
   )
 }

@@ -174,3 +174,25 @@ export const ENV = {
 }
 
 export const SIM_DAYS = 9
+
+export function eventStartAbs(e: SimEvent): number {
+  return e.day * 24 + e.startHour
+}
+
+export function eventEndAbs(e: SimEvent): number {
+  return e.day * 24 + e.endHour
+}
+
+export function isEventLive(e: SimEvent, atHour: number): boolean {
+  return atHour >= eventStartAbs(e) && atHour < eventEndAbs(e)
+}
+
+export function liveEventsAtVenue(venueId: string, atHour: number): SimEvent[] {
+  return EVENTS.filter((e) => e.venueId === venueId && isEventLive(e, atHour))
+}
+
+export function nextEventAtVenue(venueId: string, atHour: number): SimEvent | null {
+  const upcoming = EVENTS.filter((e) => e.venueId === venueId && eventStartAbs(e) >= atHour)
+  upcoming.sort((a, b) => eventStartAbs(a) - eventStartAbs(b))
+  return upcoming[0] ?? null
+}
