@@ -1,7 +1,25 @@
+import { findPlace, type Place, type RingId } from '../brc2026'
+
 export interface Waypoint {
   atHour: number
-  placeId: string
   label: string
+  /** A named place (resolved via findPlace, aliases included). */
+  placeId?: string
+  /** A synthetic, un-named stop (e.g. simulated deep-playa wandering) -- set instead of placeId. */
+  clock?: number
+  ring?: RingId | number
+  placeLabel?: string
+}
+
+/** Resolves a waypoint to something with clock/ring/label, whether it's a named Place or a synthetic stop. */
+export function resolveWaypointPlace(wp: Waypoint): Pick<Place, 'id' | 'label' | 'clock' | 'ring' | 'kind'> {
+  if (wp.placeId) return findPlace(wp.placeId)
+  return { id: `wander-${wp.clock}-${wp.ring}`, label: wp.placeLabel ?? 'Deep Playa', clock: wp.clock!, ring: wp.ring!, kind: 'venue' }
+}
+
+function sameStop(a: Waypoint, b: Waypoint): boolean {
+  if (a.placeId || b.placeId) return a.placeId === b.placeId
+  return a.clock === b.clock && a.ring === b.ring
 }
 
 const d = (day: number, hour: number) => day * 24 + hour
@@ -95,7 +113,7 @@ export interface Moment {
 
 export function getMomentAt(waypoints: Waypoint[], atHour: number): Moment {
   const { a, b, t, index } = sampleWaypointsAt(waypoints, atHour)
-  const status = t <= 0 || a.placeId === b.placeId ? 'at' : 'traveling'
+  const status = t <= 0 || sameStop(a, b) ? 'at' : 'traveling'
   const next = waypoints[index + 2] ?? null
   return { status, from: a, to: b, progress: t, next }
 }

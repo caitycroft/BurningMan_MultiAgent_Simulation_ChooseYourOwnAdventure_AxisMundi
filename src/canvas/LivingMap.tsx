@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   brcToXY,
   CITY_ARC_START_CLOCK,
@@ -8,10 +8,11 @@ import {
   RING_RADIUS,
   findPlace,
   liveEventsAtVenue,
+  nextEventAtVenue,
   type Place,
   type RingId,
 } from '../brc2026'
-import { SCRIPTED_PATH, sampleWaypointsAt, type Waypoint } from '../data/itinerary'
+import { resolveWaypointPlace, sampleWaypointsAt, type Waypoint } from '../data/itinerary'
 
 const LETTER_RINGS: RingId[] = ['esplanade', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
 
@@ -27,12 +28,22 @@ const KIND_COLOR: Record<Place['kind'], string> = {
   roaming: '#ff5aa0',
 }
 
+const DIM_KIND_COLOR: Record<Place['kind'], string> = {
+  home: 'rgba(255,215,106,0.4)',
+  camp: 'rgba(190,180,255,0.22)',
+  venue: 'rgba(170,170,190,0.22)',
+  civic: 'rgba(230,230,230,0.25)',
+  art: 'rgba(200,140,255,0.22)',
+  roaming: 'rgba(255,90,160,0.22)',
+}
+
 function placeXY(place: Place, center: { x: number; y: number }, scale: number) {
   return brcToXY(place.clock, place.ring, center, scale)
 }
 
 function waypointXY(wp: Waypoint, center: { x: number; y: number }, scale: number) {
-  return placeXY(findPlace(wp.placeId), center, scale)
+  const p = resolveWaypointPlace(wp)
+  return brcToXY(p.clock, p.ring, center, scale)
 }
 
 function pathXYAt(waypoints: Waypoint[], atHour: number, center: { x: number; y: number }, scale: number) {
@@ -58,13 +69,30 @@ function skyOverlay(hourOfDay: number): { color: string; alpha: number } {
   return isDay ? { color: '#3a3a55', alpha: 0.12 } : { color: '#000000', alpha: 0 }
 }
 
-interface LivingMapProps {
-  simHour: number
+interface Placement {
+  place: Place
+  x: number
+  y: number
+  radius: number
 }
 
-export default function LivingMap({ simHour }: LivingMapProps) {
+interface HoverInfo {
+  place: Place
+  x: number
+  y: number
+}
+
+interface LivingMapProps {
+  simHour: number
+  caityPath: Waypoint[]
+  kennyPath: Waypoint[]
+}
+
+export default function LivingMap({ simHour, caityPath, kennyPath }: LivingMapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const placementsRef = useRef<Placement[]>([])
+  const [hover, setHover] = useState<HoverInfo | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -106,11 +134,11 @@ export default function LivingMap({ simHour }: LivingMapProps) {
     const arcEnd = (CITY_ARC_END_CLOCK / 12) * Math.PI * 2 - Math.PI / 2
 
     // find where our heroes currently are, so we can highlight that ring + spoke
-    const heroXY = pathXYAt(SCRIPTED_PATH, simHour, center, scale)
-    const { a: fromWp, b: toWp, t: travelT } = sampleWaypointsAt(SCRIPTED_PATH, simHour)
-    const currentPlace = travelT < 0.5 ? findPlace(fromWp.placeId) : findPlace(toWp.placeId)
+    const caityXY = pathXYAt(caityPath, simHour, center, scale)
+    const kennyXY = pathXYAt(kennyPath, simHour, center, scale)
+    const { a: fromWp, b: toWp, t: travelT } = sampleWaypointsAt(caityPath, simHour)
+    const currentPlace = resolveWaypointPlace(travelT < 0.5 ? fromWp : toWp)
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.14)'
     ctx.lineWidth = 1
     for (const ring of LETTER_RINGS) {
       const isCurrent = ring === currentPlace.ring
@@ -173,25 +201,30 @@ export default function LivingMap({ simHour }: LivingMapProps) {
     ctx.fillStyle = 'rgba(255,255,255,0.2)'
     ctx.fillText('Trash Fence', trashFenceLabelPos.x, trashFenceLabelPos.y)
 
-    // venues, camps, civic points -- always labeled
+    // the full real 2026 dataset: ~1150 camps + ~325 art pieces. Notable/named places and
+    // anything currently live get full treatment; everything else is a dim, hoverable dot
+    // so the city reads as populated without turning into a wall of text.
+    const placements: Placement[] = []
     for (const place of PLACES) {
       if (place.kind === 'roaming') continue
 
       const liveEvents = liveEventsAtVenue(place.id, simHour)
       const liveMagnitude = liveEvents.reduce((max, e) => Math.max(max, e.magnitude), 0)
+      const isHome = place.kind === 'home'
+      const showLabel = place.notable || liveMagnitude > 0
 
       const { x, y } = placeXY(place, center, scale)
-      const isHome = place.kind === 'home'
-      const baseRadius = isHome ? 6 : place.kind === 'camp' ? 3 : 4
-      const pulse = liveMagnitude > 0 ? baseRadius + liveMagnitude * 8 : baseRadius
+      const baseRadius = isHome ? 6 : place.notable ? 3.5 : 1.6
+      const radius = liveMagnitude > 0 ? baseRadius + liveMagnitude * 8 : baseRadius
+      placements.push({ place, x, y, radius: Math.max(radius, 6) })
 
       if (liveMagnitude > 0) {
-        const glow = ctx.createRadialGradient(x, y, 0, x, y, pulse * 3)
+        const glow = ctx.createRadialGradient(x, y, 0, x, y, radius * 3)
         glow.addColorStop(0, `rgba(255,160,60,${0.5 * liveMagnitude})`)
         glow.addColorStop(1, 'rgba(255,160,60,0)')
         ctx.fillStyle = glow
         ctx.beginPath()
-        ctx.arc(x, y, pulse * 3, 0, Math.PI * 2)
+        ctx.arc(x, y, radius * 3, 0, Math.PI * 2)
         ctx.fill()
       }
 
@@ -199,27 +232,30 @@ export default function LivingMap({ simHour }: LivingMapProps) {
         ctx.strokeStyle = KIND_COLOR.home
         ctx.lineWidth = 1.5
         ctx.beginPath()
-        ctx.arc(x, y, pulse + 3, 0, Math.PI * 2)
+        ctx.arc(x, y, radius + 3, 0, Math.PI * 2)
         ctx.stroke()
       }
 
-      ctx.fillStyle = liveMagnitude > 0 ? '#ffcf8a' : KIND_COLOR[place.kind]
+      ctx.fillStyle = liveMagnitude > 0 ? '#ffcf8a' : showLabel ? KIND_COLOR[place.kind] : DIM_KIND_COLOR[place.kind]
       ctx.beginPath()
-      ctx.arc(x, y, pulse, 0, Math.PI * 2)
+      ctx.arc(x, y, radius, 0, Math.PI * 2)
       ctx.fill()
 
-      ctx.textAlign = 'left'
-      ctx.textBaseline = 'alphabetic'
-      ctx.font = isHome ? 'bold 11px -apple-system, sans-serif' : '10px -apple-system, sans-serif'
-      ctx.fillStyle = liveMagnitude > 0 ? '#ffe3b8' : isHome ? '#ffe9b3' : 'rgba(255,255,255,0.55)'
-      ctx.fillText(place.label, x + pulse + 5, y + 3)
+      if (showLabel) {
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'alphabetic'
+        ctx.font = isHome ? 'bold 11px -apple-system, sans-serif' : '10px -apple-system, sans-serif'
+        ctx.fillStyle = liveMagnitude > 0 ? '#ffe3b8' : isHome ? '#ffe9b3' : 'rgba(255,255,255,0.55)'
+        ctx.fillText(place.label, x + radius + 5, y + 3)
 
-      if (liveEvents.length > 0) {
-        ctx.font = '9px -apple-system, sans-serif'
-        ctx.fillStyle = 'rgba(255,207,138,0.85)'
-        ctx.fillText(liveEvents[0].label, x + pulse + 5, y + 15)
+        if (liveEvents.length > 0) {
+          ctx.font = '9px -apple-system, sans-serif'
+          ctx.fillStyle = 'rgba(255,207,138,0.85)'
+          ctx.fillText(liveEvents[0].label, x + radius + 5, y + 15)
+        }
       }
     }
+    placementsRef.current = placements
 
     const robotHeart = findPlace('robot-heart')
     const anchor = robotHeart.roamingAnchors?.find((a) => a.day === day)
@@ -240,17 +276,18 @@ export default function LivingMap({ simHour }: LivingMapProps) {
       ctx.fillStyle = '#ffb8dd'
       ctx.textAlign = 'left'
       ctx.fillText('Robot Heart (roaming today)', x + 10, y + 3)
+      placementsRef.current.push({ place: robotHeart, x, y, radius: 10 })
     }
 
     const trailSpan = 1.5
     const samples = 30
-    const drawTrail = (offset: { x: number; y: number }) => {
+    const drawTrail = (path: Waypoint[], offset: { x: number; y: number }) => {
       ctx.lineCap = 'round'
       for (let i = 0; i < samples; i++) {
         const t0 = simHour - trailSpan + (trailSpan * i) / samples
         const t1 = simHour - trailSpan + (trailSpan * (i + 1)) / samples
-        const p0 = pathXYAt(SCRIPTED_PATH, t0, center, scale)
-        const p1 = pathXYAt(SCRIPTED_PATH, t1, center, scale)
+        const p0 = pathXYAt(path, t0, center, scale)
+        const p1 = pathXYAt(path, t1, center, scale)
         const alpha = (i / samples) * 0.6
         ctx.strokeStyle = `rgba(0,229,255,${alpha})`
         ctx.lineWidth = 1 + (i / samples) * 2
@@ -261,11 +298,11 @@ export default function LivingMap({ simHour }: LivingMapProps) {
       }
     }
 
-    drawTrail({ x: 0, y: 0 })
-    drawTrail({ x: 7, y: 7 })
+    drawTrail(caityPath, { x: 0, y: 0 })
+    drawTrail(kennyPath, { x: 6, y: 6 })
 
-    const caity = heroXY
-    const kenny = { x: caity.x + 7, y: caity.y + 7 }
+    const caity = caityXY
+    const kenny = { x: kennyXY.x + 6, y: kennyXY.y + 6 }
 
     for (const [pos, label] of [
       [caity, 'Caity'],
@@ -296,11 +333,73 @@ export default function LivingMap({ simHour }: LivingMapProps) {
     ctx.font = '10px -apple-system, sans-serif'
     ctx.fillStyle = 'rgba(255,255,255,0.4)'
     ctx.fillText('The Man', manXY.x + 8, manXY.y + 3)
-  }, [simHour])
+  }, [simHour, caityPath, kennyPath])
+
+  function handlePointerMove(e: ReactMouseEvent<HTMLCanvasElement>) {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const mx = e.clientX - rect.left
+    const my = e.clientY - rect.top
+    let nearest: Placement | null = null
+    let nearestDistSq = Infinity
+    for (const p of placementsRef.current) {
+      const dx = p.x - mx
+      const dy = p.y - my
+      const distSq = dx * dx + dy * dy
+      if (distSq < nearestDistSq) {
+        nearestDistSq = distSq
+        nearest = p
+      }
+    }
+    const HOVER_RADIUS_PX = 16
+    if (nearest && nearestDistSq <= HOVER_RADIUS_PX * HOVER_RADIUS_PX) {
+      setHover({ place: nearest.place, x: nearest.x, y: nearest.y })
+    } else {
+      setHover(null)
+    }
+  }
+
+  const hoverLive = hover ? liveEventsAtVenue(hover.place.id, simHour) : []
+  const hoverNext = hover ? nextEventAtVenue(hover.place.id, simHour) : null
 
   return (
     <div ref={containerRef} style={{ position: 'absolute', inset: 0 }}>
-      <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+      <canvas
+        ref={canvasRef}
+        onMouseMove={handlePointerMove}
+        onMouseLeave={() => setHover(null)}
+        style={{ width: '100%', height: '100%', display: 'block', cursor: hover ? 'pointer' : 'default' }}
+      />
+      {hover && (
+        <div
+          style={{
+            position: 'absolute',
+            left: hover.x + 14,
+            top: hover.y + 14,
+            maxWidth: 240,
+            padding: '8px 10px',
+            borderRadius: 8,
+            background: 'rgba(10,10,10,0.9)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            fontSize: 11,
+            lineHeight: 1.4,
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ fontWeight: 700 }}>{hover.place.label}</div>
+          {hover.place.hometown && <div style={{ opacity: 0.55 }}>from {hover.place.hometown}</div>}
+          {hoverLive.length > 0 && (
+            <div style={{ color: '#ffcf8a', marginTop: 4 }}>
+              Live: {hoverLive.map((e) => e.label).join(', ')}
+            </div>
+          )}
+          {!hoverLive.length && hoverNext && (
+            <div style={{ opacity: 0.65, marginTop: 4 }}>
+              Next: {hoverNext.label} (day {hoverNext.day}, {Math.floor(hoverNext.startHour)}:
+              {String(Math.round((hoverNext.startHour % 1) * 60)).padStart(2, '0')})
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

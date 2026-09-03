@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import LivingMap from './canvas/LivingMap'
-import { DAY_LABELS, EVENTS, findPlace, liveEventsAtVenue } from './brc2026'
-import { SCRIPTED_PATH, TOTAL_SIM_HOURS, getMomentAt } from './data/itinerary'
+import { DAY_LABELS, EVENTS, liveEventsAtVenue } from './brc2026'
+import { SCRIPTED_PATH, getMomentAt, resolveWaypointPlace } from './data/itinerary'
+import { simulateWeek } from './sim/simulate'
+import { INTENT_PRESETS, normalizeWeights, type IntentWeights } from './sim/presets'
+import IntentPad, { IntentPresetButtons } from './ui/IntentPad'
 
 const BASE_SIM_MINUTES_PER_SEC = 5
 const SPEEDS = [1, 10, 60] as const
@@ -11,11 +14,31 @@ const lockedAnchors = EVENTS.filter((e) => e.lockedAnchor).map((e) => ({
   atHour: e.day * 24 + e.startHour,
 }))
 
+type Mode = 'planned' | 'simulate'
+
 export default function App() {
+  const [mode, setMode] = useState<Mode>('planned')
+  const [weights, setWeights] = useState<IntentWeights>(INTENT_PRESETS.balanced)
+  const [seed, setSeed] = useState('axis-mundi-01')
+
   const [simHour, setSimHour] = useState(0)
   const [playing, setPlaying] = useState(true)
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1)
   const lastFrameRef = useRef<number | null>(null)
+
+  const simResult = useMemo(() => {
+    if (mode !== 'simulate') return null
+    return simulateWeek(normalizeWeights(weights), seed)
+  }, [mode, weights, seed])
+
+  const caityPath = simResult ? simResult.caity : SCRIPTED_PATH
+  const kennyPath = simResult ? simResult.kenny : SCRIPTED_PATH
+  const totalHours = caityPath[caityPath.length - 1].atHour
+
+  // switching mode/weights/seed can change the timeline length -- keep the scrubber in range
+  useEffect(() => {
+    setSimHour((prev) => Math.min(prev, totalHours))
+  }, [totalHours])
 
   useEffect(() => {
     let raf: number
@@ -27,9 +50,9 @@ export default function App() {
       if (playing) {
         setSimHour((prev) => {
           const next = prev + (deltaSec * BASE_SIM_MINUTES_PER_SEC * speed) / 60
-          if (next >= TOTAL_SIM_HOURS) {
+          if (next >= totalHours) {
             setPlaying(false)
-            return TOTAL_SIM_HOURS
+            return totalHours
           }
           return next
         })
@@ -38,24 +61,28 @@ export default function App() {
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [playing, speed])
+  }, [playing, speed, totalHours])
 
   const day = Math.floor(simHour / 24)
   const hourOfDay = simHour - day * 24
   const hh = Math.floor(hourOfDay).toString().padStart(2, '0')
   const mm = Math.round((hourOfDay % 1) * 60).toString().padStart(2, '0')
 
-  const moment = useMemo(() => getMomentAt(SCRIPTED_PATH, simHour), [simHour])
-  const fromPlace = findPlace(moment.from.placeId)
-  const toPlace = findPlace(moment.to.placeId)
+  const moment = useMemo(() => getMomentAt(caityPath, simHour), [caityPath, simHour])
+  const kennyMoment = useMemo(() => getMomentAt(kennyPath, simHour), [kennyPath, simHour])
+  const fromPlace = resolveWaypointPlace(moment.from)
+  const toPlace = resolveWaypointPlace(moment.to)
   const herePlace = moment.status === 'at' ? fromPlace : toPlace
   const hereActivity = moment.status === 'at' ? moment.from.label : moment.to.label
   const liveHere = liveEventsAtVenue(herePlace.id, simHour)
-  const nextPlace = moment.next ? findPlace(moment.next.placeId) : null
+  const nextPlace = moment.next ? resolveWaypointPlace(moment.next) : null
+
+  const kennyHerePlace = resolveWaypointPlace(kennyMoment.status === 'at' ? kennyMoment.from : kennyMoment.to)
+  const kennyDiverged = kennyHerePlace.id !== herePlace.id
 
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh' }}>
-      <LivingMap simHour={simHour} />
+      <LivingMap simHour={simHour} caityPath={caityPath} kennyPath={kennyPath} />
 
       <div
         style={{
@@ -70,6 +97,71 @@ export default function App() {
       >
         Axis Mundi — {DAY_LABELS[Math.min(day, DAY_LABELS.length - 1)]} · {hh}:{mm}
       </div>
+
+      <div style={{ position: 'absolute', top: 44, left: 16, display: 'flex', gap: 8 }}>
+        <button
+          onClick={() => {
+            setMode('planned')
+            setPlaying(false)
+            setSimHour(0)
+          }}
+          style={buttonStyle(mode === 'planned')}
+        >
+          Planned
+        </button>
+        <button
+          onClick={() => {
+            setMode('simulate')
+            setPlaying(false)
+            setSimHour(0)
+          }}
+          style={buttonStyle(mode === 'simulate')}
+        >
+          Simulate
+        </button>
+      </div>
+
+      {mode === 'simulate' && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 90,
+            left: 16,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: 'rgba(10,10,10,0.65)',
+            border: '1px solid rgba(255,255,255,0.1)',
+          }}
+        >
+          <IntentPad weights={weights} onChange={setWeights} />
+          <IntentPresetButtons onChange={setWeights} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+            <input
+              value={seed}
+              onChange={(e) => setSeed(e.target.value)}
+              style={{
+                flex: 1,
+                fontSize: 11,
+                padding: '4px 8px',
+                borderRadius: 6,
+                border: '1px solid rgba(255,255,255,0.2)',
+                background: 'rgba(255,255,255,0.05)',
+                color: '#e8e8e8',
+              }}
+            />
+            <button
+              title="Reroll seed"
+              onClick={() => setSeed(Math.random().toString(36).slice(2, 8))}
+              style={{ ...buttonStyle(false), padding: '4px 8px' }}
+            >
+              🎲
+            </button>
+          </div>
+          <div style={{ fontSize: 10, opacity: 0.5, marginTop: 6, maxWidth: 160 }}>
+            Same city, same real events, same food/sleep/sunrise rules. Drag the pad to reweight the week.
+          </div>
+        </div>
+      )}
 
       <div
         style={{
@@ -92,6 +184,9 @@ export default function App() {
           {moment.status === 'at' ? herePlace.label : `${fromPlace.label} → ${toPlace.label}`}
         </div>
         <div style={{ opacity: 0.75, marginTop: 2 }}>{hereActivity}</div>
+        {kennyDiverged && (
+          <div style={{ opacity: 0.6, marginTop: 2, fontSize: 11 }}>Kenny: {kennyHerePlace.label}</div>
+        )}
 
         {liveHere.length > 0 && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
@@ -154,10 +249,7 @@ export default function App() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-          <button
-            onClick={() => setPlaying((p) => !p)}
-            style={buttonStyle(false)}
-          >
+          <button onClick={() => setPlaying((p) => !p)} style={buttonStyle(false)}>
             {playing ? 'Pause' : 'Play'}
           </button>
           {SPEEDS.map((s) => (
@@ -171,7 +263,7 @@ export default function App() {
           <input
             type="range"
             min={0}
-            max={TOTAL_SIM_HOURS}
+            max={totalHours}
             step={0.05}
             value={simHour}
             onChange={(e) => {
@@ -186,7 +278,7 @@ export default function App() {
                 key={label}
                 style={{
                   position: 'absolute',
-                  left: `${(i * 24 * 100) / TOTAL_SIM_HOURS}%`,
+                  left: `${(i * 24 * 100) / totalHours}%`,
                   fontSize: 10,
                   opacity: 0.5,
                   transform: 'translateX(-4px)',
@@ -201,7 +293,7 @@ export default function App() {
                 title={a.label}
                 style={{
                   position: 'absolute',
-                  left: `${(a.atHour * 100) / TOTAL_SIM_HOURS}%`,
+                  left: `${(a.atHour * 100) / totalHours}%`,
                   top: -18,
                   transform: 'translateX(-6px)',
                   fontSize: 12,
@@ -226,7 +318,7 @@ function LegendRow({ color, label }: { color: string; label: string }) {
   )
 }
 
-function buttonStyle(active: boolean): React.CSSProperties {
+function buttonStyle(active: boolean): CSSProperties {
   return {
     padding: '6px 14px',
     borderRadius: 999,
